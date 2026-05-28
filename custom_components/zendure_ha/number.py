@@ -117,21 +117,30 @@ class ZendureRestoreNumber(ZendureNumber, RestoreEntity):
         minimum: int = 0,
         mode: NumberMode = NumberMode.AUTO,
         doupdate: bool = False,
+        initial_default: int = 0,
     ) -> None:
         """Initialize a number entity."""
         super().__init__(device, uniqueid, onwrite, template, uom, deviceclass, maximum, minimum, mode, 1, doupdate)
-        self._attr_native_value = 0
+        # Oracle S1+S2: set native_value to the intended default right at
+        # __init__ time (was: hard 0). This also covers S2: any code path
+        # that reads asNumber/asInt before async_added_to_hass runs now sees
+        # the intended default instead of a misleading 0.
+        self._attr_native_value = initial_default
+        self._initial_default = initial_default
 
     async def async_added_to_hass(self) -> None:
         """Handle entity which will be added."""
         await super().async_added_to_hass()
-        if state := await self.async_get_last_state():
-            if state.state is None or state.state == "unknown":
-                self._attr_native_value = 0
-                return
-            self._attr_native_value = int(float(state.state))
-            if self._onwrite is not None:
-                if asyncio.iscoroutinefunction(self._onwrite):
-                    await self._onwrite(self, self._attr_native_value)
-                else:
-                    self._onwrite(self, self._attr_native_value)
+        state = await self.async_get_last_state()
+        if state is None or state.state in (None, "unknown", "unavailable"):
+            self._attr_native_value = self._initial_default
+        else:
+            try:
+                self._attr_native_value = int(float(state.state))
+            except (TypeError, ValueError):
+                self._attr_native_value = self._initial_default
+        if self._onwrite is not None:
+            if asyncio.iscoroutinefunction(self._onwrite):
+                await self._onwrite(self, self._attr_native_value)
+            else:
+                self._onwrite(self, self._attr_native_value)

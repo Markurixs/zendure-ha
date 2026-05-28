@@ -23,6 +23,7 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.loader import async_get_integration
+from homeassistant.util import dt as dt_util
 
 from .api import Api
 from .const import (
@@ -66,6 +67,7 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         self.zero_fast = datetime.min
         self.check_reset = datetime.min
         self.p1meterEvent: Callable[[], None] | None = None
+        self.p1meterEntityId: str | None = None
         self.p1_history: deque[int] = deque([25, -25], maxlen=8)
         self.p1_factor = 1
         self.update_count = 0
@@ -123,7 +125,17 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         # In this band no power redistribution is triggered, which dramatically
         # reduces hardware regulation cycles. Default 50W = ~90% fewer regs vs 0.
         self.deadzone = ZendureRestoreNumber(
-            self, "deadzone", None, None, "W", "power", SmartMode.DEADZONE_MAX, 0, NumberMode.BOX, True
+            self,
+            "deadzone",
+            None,
+            None,
+            "W",
+            "power",
+            SmartMode.DEADZONE_MAX,
+            0,
+            NumberMode.BOX,
+            True,
+            initial_default=SmartMode.DEADZONE_DEFAULT,
         )
         # Issue #1022: P1 target offset. Positive shifts the regulator toward
         # net-import (allow draw), negative toward net-export (push feed-in).
@@ -138,12 +150,25 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
             -SmartMode.TARGET_RANGE,
             NumberMode.BOX,
             True,
+            initial_default=SmartMode.TARGET_DEFAULT,
         )
         self.deadzone_skips = ZendureSensor(self, "deadzone_skips_total", None, None, None, "total_increasing", 0)
 
-        # Issue #694: dynamic-tariff entities (only active when a price sensor is configured)
+        # Issue #694: dynamic-tariff entities. The entities exist regardless of
+        # whether a price sensor is configured; _evaluate_cheap_hours() simply
+        # noops when self.price_sensor is None.
         self.cheap_hours_count = ZendureRestoreNumber(
-            self, "cheap_hours_count", None, None, "h", None, SmartMode.CHEAP_HOURS_MAX, 0, NumberMode.BOX, True
+            self,
+            "cheap_hours_count",
+            None,
+            None,
+            "h",
+            None,
+            SmartMode.CHEAP_HOURS_MAX,
+            0,
+            NumberMode.BOX,
+            True,
+            initial_default=SmartMode.CHEAP_HOURS_DEFAULT,
         )
         self.cheap_price_threshold = ZendureRestoreNumber(
             self,
@@ -156,6 +181,7 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
             0,
             NumberMode.BOX,
             True,
+            initial_default=SmartMode.CHEAP_PRICE_THRESHOLD_DEFAULT,
         )
         self.current_price = ZendureSensor(self, "current_price", None, "ct/kWh", "monetary", "measurement", 2)
         self.cheap_hours_active = ZendureSensor(self, "cheap_hours_active", None, None, None, None, 0)
@@ -164,7 +190,7 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         # Modeled as a Number 0..1 because no RestoreSwitch exists in the codebase
         # and adding boilerplate just for one flag is not worth it.
         self.adaptive_timing = ZendureRestoreNumber(
-            self, "adaptive_timing", None, None, None, None, 1, 0, NumberMode.BOX, True
+            self, "adaptive_timing", None, None, None, None, 1, 0, NumberMode.BOX, True, initial_default=0
         )
 
         # load devices
@@ -336,16 +362,22 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         prices in attributes.today / attributes.tomorrow as a list of
         {"total": <price>, "startsAt": <iso>} dicts. Falls back to a
         simple threshold check if the future-prices array is unavailable.
+
+        Oracle S3: on any failure (no sensor, unavailable, parse error)
+        the derived state is explicitly reset so downstream automations
+        do not act on stale values.
         """
         if not self.price_sensor:
             return
         state = self.hass.states.get(self.price_sensor)
         if state is None or state.state in ("unknown", "unavailable", None):
+            self.cheap_hours_active.update_value(0)
             return
 
         try:
             current = float(state.state)
         except (TypeError, ValueError):
+            self.cheap_hours_active.update_value(0)
             return
         self.current_price.update_value(current)
 
@@ -410,13 +442,24 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         except Exception as err:
             _LOGGER.warning("cheap-hours evaluation failed: %s", err)
 
-        # Issue #1103: warn on stale P1 sensor (acts as health-check)
-        if self.p1meterEvent is not None and self.p1_last_update != datetime.min:
-            age = (datetime.now() - self.p1_last_update).total_seconds()
-            if age > SmartMode.P1_STALE_TIMEOUT:
-                _LOGGER.warning("P1 sensor stale for %ss, forcing power=0", int(age))
+        # Issue #1103 + Oracle C2: stale-detection uses HA's state.last_updated
+        # (not callback arrival time). state_changed only fires on value change,
+        # so a meter sitting at the same value for >P1_STALE_TIMEOUT seconds
+        # would false-trigger if we tracked callback time. last_updated also
+        # covers the "stuck since boot" case because HA bumps it on availability
+        # transitions too.
+        if self.p1meterEntityId is not None:
+            entity = self.hass.states.get(self.p1meterEntityId)
+            if entity is None or entity.state in ("unknown", "unavailable", None):
+                _LOGGER.warning("P1 sensor %s is unavailable, forcing power=0", self.p1meterEntityId)
                 self.power.update_value(0)
-                if self.operation == ManagerMode.OFF:
+                self.operationstate.update_value(ManagerState.OFF.value)
+            else:
+                last_updated = entity.last_updated
+                age = (dt_util.utcnow() - last_updated).total_seconds()
+                if age > SmartMode.P1_STALE_TIMEOUT:
+                    _LOGGER.warning("P1 sensor stale for %ss, forcing power=0", int(age))
+                    self.power.update_value(0)
                     self.operationstate.update_value(ManagerState.OFF.value)
 
         # Manually update the timer
@@ -429,10 +472,12 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         if self.p1meterEvent:
             self.p1meterEvent()
         if p1meter:
+            self.p1meterEntityId = p1meter
             self.p1meterEvent = async_track_state_change_event(self.hass, [p1meter], self._p1_changed)
             if (entity := self.hass.states.get(p1meter)) is not None and entity.attributes.get("unit_of_measurement", "W") in ("kW", "kilowatt", "kilowatts"):
                 self.p1_factor = 1000
         else:
+            self.p1meterEntityId = None
             self.p1meterEvent = None
 
     def writeSimulation(self, time: datetime, p1: int) -> None:
@@ -490,17 +535,20 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         # Issue #1103: track for stale-detection in _async_update_data
         self.p1_last_update = datetime.now()
 
-        # Issue #1022: apply target offset, then deadzone gate.
-        # When |p1 - target| <= deadzone we skip the redistribution entirely.
-        # The history is still updated with 0 so stddev tracking stays consistent.
+        # Issue #1022 + Oracle C1: apply target offset, then deadzone gate.
+        # When |p1 - target| <= deadzone we skip ACTUATION (powerChanged) but
+        # still feed the REAL effective value into p1_history. Writing 0 here
+        # would poison the stddev fast-detector, making adaptive timing fire
+        # off the deadzone boundary instead of real grid behaviour.
         target = int(self.p1_target.asNumber)
         deadzone = int(self.deadzone.asNumber)
-        if deadzone > 0 and abs(p1 - target) <= deadzone:
-            self.p1_history.append(0)
+        p1_effective = p1 - target
+        if deadzone > 0 and abs(p1_effective) <= deadzone:
+            self.p1_history.append(p1_effective)
             self.deadzone_skip_count += 1
             self.deadzone_skips.update_value(self.deadzone_skip_count)
             return
-        p1 = p1 - target
+        p1 = p1_effective
 
         # Get time & update simulation
         time = datetime.now()
@@ -630,16 +678,15 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
                     await self.power_discharge(setpoint)
 
             case ManagerMode.MATCHING_DISCHARGE:
-                # Issue #1040: with external PV pushing surplus (setpoint < 0),
-                # discharge(0) leaks power on some devices because the cluster
-                # is still "armed". Send a small negative bias instead, which
-                # is the established pattern in power_charge (line "set to 10
-                # instead of 0"). This actively idles the cluster without the
-                # invasive power_off() that would disturb cluster state.
+                # Issue #1040 + Oracle C3: the earlier "discharge(-10)" attempt
+                # was dead code because device.power_discharge clamps negatives
+                # to 0. The real fix needs a device-contract change which is
+                # out of scope here. For now we behave like upstream and log
+                # when an external PV surplus is detected so the user can act
+                # in their own automation.
                 if setpoint < -SmartMode.POWER_START:
-                    await self.power_discharge(-10)
-                else:
-                    await self.power_discharge(max(0, setpoint))
+                    _LOGGER.info("MATCHING_DISCHARGE: external PV surplus detected (%sW), not discharging", setpoint)
+                await self.power_discharge(max(0, setpoint))
 
             case ManagerMode.MATCHING_CHARGE | ManagerMode.STORE_SOLAR:
                 # Allow discharge of produced power in MATCHING_CHARGE-Mode, otherwise only charge
