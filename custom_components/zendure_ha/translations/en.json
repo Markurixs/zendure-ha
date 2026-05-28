@@ -123,6 +123,9 @@
       },
       "cheap_price_threshold": {
         "name": "Cheap price threshold (ct/kWh)"
+      },
+      "adaptive_timing": {
+        "name": "Adaptive timing (0=off, 1=on, default 0; turn ON only when no external zero-export controller is active)"
       }
     },
     "sensor": {

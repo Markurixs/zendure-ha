@@ -160,6 +160,13 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         self.current_price = ZendureSensor(self, "current_price", None, "ct/kWh", "monetary", "measurement", 2)
         self.cheap_hours_active = ZendureSensor(self, "cheap_hours_active", None, None, None, None, 0)
 
+        # Issue #1320: opt-in adaptive timing for large P1 spikes (0=off, 1=on).
+        # Modeled as a Number 0..1 because no RestoreSwitch exists in the codebase
+        # and adding boilerplate just for one flag is not worth it.
+        self.adaptive_timing = ZendureRestoreNumber(
+            self, "adaptive_timing", None, None, None, None, 1, 0, NumberMode.BOX, True
+        )
+
         # load devices
         for dev in data["deviceList"]:
             try:
@@ -505,10 +512,18 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
             self.p1_history.append(p1)
             return
 
+        # Issue #1320: adaptive stddev floor scales with absolute load so the
+        # detector still fires on large spikes (where the upstream 15W floor
+        # is dwarfed by background noise). Only active when adaptive_timing=1.
+        adaptive_on = int(self.adaptive_timing.asNumber) == 1
+        stddev_floor = SmartMode.P1_STDDEV_MIN
+        if adaptive_on:
+            stddev_floor = max(SmartMode.P1_STDDEV_MIN, int(abs(p1) * SmartMode.STDDEV_SPIKE_FACTOR))
+
         # calculate the standard deviation
         if len(self.p1_history) > 1:
             avg = int(sum(self.p1_history) / len(self.p1_history))
-            stddev = SmartMode.P1_STDDEV_FACTOR * max(SmartMode.P1_STDDEV_MIN, sqrt(sum([pow(i - avg, 2) for i in self.p1_history]) / len(self.p1_history)))
+            stddev = SmartMode.P1_STDDEV_FACTOR * max(stddev_floor, sqrt(sum([pow(i - avg, 2) for i in self.p1_history]) / len(self.p1_history)))
             if isFast := abs(p1 - avg) > stddev or abs(p1 - self.p1_history[0]) > stddev:
                 self.p1_history.clear()
         else:
@@ -543,7 +558,16 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
 
             time = datetime.now()
             self.zero_next = time + timedelta(seconds=SmartMode.TIMEZERO)
-            self.zero_fast = time + timedelta(seconds=SmartMode.TIMEFAST)
+            # Issue #1320: shorter TIMEFAST lockout for larger spikes so the
+            # cluster can re-react sooner. Disabled when adaptive_timing=0.
+            fast_secs = SmartMode.TIMEFAST
+            if adaptive_on:
+                abs_p1 = abs(p1)
+                if abs_p1 > SmartMode.SPIKE_LARGE_THRESHOLD:
+                    fast_secs = SmartMode.TIMEFAST_LARGE
+                elif abs_p1 > SmartMode.SPIKE_MED_THRESHOLD:
+                    fast_secs = SmartMode.TIMEFAST_MED
+            self.zero_fast = time + timedelta(seconds=fast_secs)
 
     async def powerChanged(self, p1: int, isFast: bool, time: datetime) -> None:
         """Return the distribution setpoint."""

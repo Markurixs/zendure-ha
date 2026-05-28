@@ -92,3 +92,16 @@ class SmartMode:
     CHEAP_HOURS_MAX = 12
     CHEAP_PRICE_THRESHOLD_DEFAULT = 15
     CHEAP_PRICE_THRESHOLD_MAX = 100
+
+    # Issue #1320: Adaptive timing for large P1 spikes. Opt-in via the
+    # adaptive_timing Number entity (0=off=upstream behaviour, 1=on).
+    # When ON: the TIMEFAST lockout is shortened for big spikes so the
+    # cluster reacts faster instead of waiting the full TIMEFAST window.
+    # Coexistence with external zero-export controllers (e.g. Hoymiles
+    # zero-export addon) is risky — keep OFF unless this is the only
+    # regulator on the grid bus.
+    TIMEFAST_MED = 1.0
+    TIMEFAST_LARGE = 0.5
+    SPIKE_MED_THRESHOLD = 500
+    SPIKE_LARGE_THRESHOLD = 1500
+    STDDEV_SPIKE_FACTOR = 0.02

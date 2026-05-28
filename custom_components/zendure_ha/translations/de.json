@@ -112,6 +112,9 @@
       },
       "cheap_price_threshold": {
         "name": "Günstig-Preis-Schwelle (ct/kWh)"
+      },
+      "adaptive_timing": {
+        "name": "Adaptive Reaktion (0=aus, 1=ein, Default 0; nur EIN wenn kein externer Nulleinspeise-Regler aktiv)"
       }
     },
     "sensor": {
