@@ -1,0 +1,29 @@
+# artifacts
+__pycache__
+.pytest*
+*.egg-info
+*/build/*
+*/dist/*
+
+
+# misc
+.env*
+.mcp.json
+.claude/settings.local.json
+.devcontainer/
+scripts/ha_*
+backups/
+snapshots/
+.coverage
+coverage.xml
+.ruff_cache
+
+
+# Home Assistant configuration
+config/*
+/.vs
+
+
+# Home Assistant configuration
+custom_components/*
+!custom_components/zendure_ha
