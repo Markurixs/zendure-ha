@@ -2,7 +2,7 @@
   "domain": "zendure_ha",
   "name": "Zendure Home Assistant Integration",
   "codeowners": [
-    "@fireson"
+    "@Markurixs"
   ],
   "config_flow": true,
   "dependencies": [
@@ -10,9 +10,9 @@
     "mqtt",
     "recorder"
   ],
-  "documentation": "https://github.com/zendure/zendure-ha",
+  "documentation": "https://github.com/Markurixs/zendure-ha",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/zendure/zendure-ha/issues",
+  "issue_tracker": "https://github.com/Markurixs/zendure-ha/issues",
   "requirements": [
     "bleak-retry-connector>=3.9.0",
     "paho-mqtt==2.1.0"

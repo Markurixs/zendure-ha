@@ -68,15 +68,7 @@ To install via HACS:
 
 Contributions are welcome! If you're interested in contributing, please review our [Contribution Guidelines](CONTRIBUTING.md) before submitting a pull request or issue.
 
-## Support
-
-If you find this project helpful and want to support its development, consider buying me a coffee!
-[![Buy Me a Coffee][buymecoffeebadge]][buymecoffee]
-
 ---
-
-[buymecoffee]: https://www.buymeacoffee.com/fireson
-[buymecoffeebadge]: https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png
 [license-shield]: https://img.shields.io/github/license/zendure/zendure-ha.svg?style=for-the-badge
 [hacs]: https://github.com/zendure/zendure-ha
 [hacsbadge]: https://img.shields.io/badge/HACS-Default-orange.svg?style=for-the-badge
