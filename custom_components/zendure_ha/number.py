@@ -130,15 +130,19 @@ class ZendureRestoreNumber(ZendureNumber, RestoreEntity):
 
     async def async_added_to_hass(self) -> None:
         """Handle entity which will be added."""
+        # Defensive: getattr with 0 fallback. Some HA versions or restore-state
+        # paths reconstruct entities such that __init__ side-effects on `self`
+        # are not visible here. Reading via getattr keeps us safe.
+        initial = getattr(self, "_initial_default", 0)
         await super().async_added_to_hass()
         state = await self.async_get_last_state()
         if state is None or state.state in (None, "unknown", "unavailable"):
-            self._attr_native_value = self._initial_default
+            self._attr_native_value = initial
         else:
             try:
                 self._attr_native_value = int(float(state.state))
             except (TypeError, ValueError):
-                self._attr_native_value = self._initial_default
+                self._attr_native_value = initial
         if self._onwrite is not None:
             if asyncio.iscoroutinefunction(self._onwrite):
                 await self._onwrite(self, self._attr_native_value)
