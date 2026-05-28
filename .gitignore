@@ -8,8 +8,6 @@ __pycache__
 
 # misc
 .env*
-.mcp.json
-.claude/settings.local.json
 .devcontainer/
 scripts/ha_*
 backups/
@@ -17,6 +15,7 @@ snapshots/
 .coverage
 coverage.xml
 .ruff_cache
+metrics/
 
 
 # Home Assistant configuration
