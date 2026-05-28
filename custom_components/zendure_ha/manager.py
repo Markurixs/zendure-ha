@@ -28,6 +28,7 @@ from .api import Api
 from .const import (
     CONF_AUTO_MQTT_USER,
     CONF_P1METER,
+    CONF_PRICE,
     DOMAIN,
     DeviceState,
     ManagerMode,
@@ -93,6 +94,8 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         self.p1_last_update: datetime = datetime.min
         # Issue #1022: deadzone skip counter, exposed via deadzone_skips sensor
         self.deadzone_skip_count: int = 0
+        # Issue #694: price sensor entity_id (None when feature is disabled)
+        self.price_sensor: str | None = None
 
     async def loadDevices(self) -> None:
         if self.config_entry is None or (data := await Api.Connect(self.hass, dict(self.config_entry.data), True)) is None:
@@ -137,6 +140,25 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
             True,
         )
         self.deadzone_skips = ZendureSensor(self, "deadzone_skips_total", None, None, None, "total_increasing", 0)
+
+        # Issue #694: dynamic-tariff entities (only active when a price sensor is configured)
+        self.cheap_hours_count = ZendureRestoreNumber(
+            self, "cheap_hours_count", None, None, "h", None, SmartMode.CHEAP_HOURS_MAX, 0, NumberMode.BOX, True
+        )
+        self.cheap_price_threshold = ZendureRestoreNumber(
+            self,
+            "cheap_price_threshold",
+            None,
+            None,
+            "ct/kWh",
+            None,
+            SmartMode.CHEAP_PRICE_THRESHOLD_MAX,
+            0,
+            NumberMode.BOX,
+            True,
+        )
+        self.current_price = ZendureSensor(self, "current_price", None, "ct/kWh", "monetary", "measurement", 2)
+        self.cheap_hours_active = ZendureSensor(self, "cheap_hours_active", None, None, None, None, 0)
 
         # load devices
         for dev in data["deviceList"]:
@@ -190,6 +212,13 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
         self.api.Init(self.config_entry.data, mqtt)
         await self.update_fusegroups()
         self.update_p1meter(self.config_entry.data.get(CONF_P1METER, "sensor.power_actual"))
+
+        # Issue #694: register the optional price sensor (empty string -> disabled)
+        price = self.config_entry.data.get(CONF_PRICE, None)
+        self.price_sensor = price if price else None
+        if self.price_sensor:
+            _LOGGER.info("Dynamic tariff enabled, using price sensor: %s", self.price_sensor)
+
         await asyncio.sleep(1)  # allow other tasks to run
 
     async def update_fusegroups(self) -> None:
@@ -293,6 +322,48 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
                         for d in self.devices:
                             await d.power_off()
 
+    def _evaluate_cheap_hours(self) -> None:
+        """Evaluate price sensor and set current_price + cheap_hours_active.
+
+        Supports Tibber-style sensors that expose today/tomorrow hourly
+        prices in attributes.today / attributes.tomorrow as a list of
+        {"total": <price>, "startsAt": <iso>} dicts. Falls back to a
+        simple threshold check if the future-prices array is unavailable.
+        """
+        if not self.price_sensor:
+            return
+        state = self.hass.states.get(self.price_sensor)
+        if state is None or state.state in ("unknown", "unavailable", None):
+            return
+
+        try:
+            current = float(state.state)
+        except (TypeError, ValueError):
+            return
+        self.current_price.update_value(current)
+
+        threshold = float(self.cheap_price_threshold.asNumber)
+        top_n = int(self.cheap_hours_count.asNumber)
+        is_cheap = 0
+
+        prices: list[float] = []
+        for key in ("today", "tomorrow"):
+            attr = state.attributes.get(key)
+            if isinstance(attr, list):
+                for item in attr:
+                    val = item.get("total") if isinstance(item, dict) else None
+                    if isinstance(val, (int, float)):
+                        prices.append(float(val))
+
+        if top_n > 0 and len(prices) >= top_n:
+            cheapest = sorted(prices)[:top_n]
+            if current <= max(cheapest):
+                is_cheap = 1
+        elif threshold > 0 and current <= threshold:
+            is_cheap = 1
+
+        self.cheap_hours_active.update_value(is_cheap)
+
     async def _async_update_data(self) -> None:
 
         def isBleDevice(device: ZendureDevice, si: bluetooth.BluetoothServiceInfoBleak) -> bool:
@@ -325,6 +396,21 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
             device.setStatus()
         self.update_count += 1
         self.totalKwh.update_value(kwh)
+
+        # Issue #694: evaluate dynamic tariff once per refresh cycle
+        try:
+            self._evaluate_cheap_hours()
+        except Exception as err:
+            _LOGGER.warning("cheap-hours evaluation failed: %s", err)
+
+        # Issue #1103: warn on stale P1 sensor (acts as health-check)
+        if self.p1meterEvent is not None and self.p1_last_update != datetime.min:
+            age = (datetime.now() - self.p1_last_update).total_seconds()
+            if age > SmartMode.P1_STALE_TIMEOUT:
+                _LOGGER.warning("P1 sensor stale for %ss, forcing power=0", int(age))
+                self.power.update_value(0)
+                if self.operation == ManagerMode.OFF:
+                    self.operationstate.update_value(ManagerState.OFF.value)
 
         # Manually update the timer
         if self.hass and self.hass.loop.is_running():
@@ -520,8 +606,16 @@ class ZendureManager(DataUpdateCoordinator[None], EntityDevice):
                     await self.power_discharge(setpoint)
 
             case ManagerMode.MATCHING_DISCHARGE:
-                # Only discharge, do nothing if setpoint is negative
-                await self.power_discharge(max(0, setpoint))
+                # Issue #1040: with external PV pushing surplus (setpoint < 0),
+                # discharge(0) leaks power on some devices because the cluster
+                # is still "armed". Send a small negative bias instead, which
+                # is the established pattern in power_charge (line "set to 10
+                # instead of 0"). This actively idles the cluster without the
+                # invasive power_off() that would disturb cluster state.
+                if setpoint < -SmartMode.POWER_START:
+                    await self.power_discharge(-10)
+                else:
+                    await self.power_discharge(max(0, setpoint))
 
             case ManagerMode.MATCHING_CHARGE | ManagerMode.STORE_SOLAR:
                 # Allow discharge of produced power in MATCHING_CHARGE-Mode, otherwise only charge

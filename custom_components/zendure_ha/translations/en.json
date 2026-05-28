@@ -14,6 +14,7 @@
         "data": {
           "token": "Zendure Token",
           "p1meter": "P1 Sensor for smart matching",
+          "price": "Optional: electricity price sensor (ct/kWh)",
           "mqttlog": "Log MQTT communication",
           "mqttlocal": "Use local MQTT",
           "auto_mqtt_user": "Automatically manage MQTT users",
@@ -36,6 +37,7 @@
         "data": {
           "token": "Zendure Token",
           "p1meter": "P1 Sensor for smart matching",
+          "price": "Optional: electricity price sensor (ct/kWh)",
           "mqttlog": "Log MQTT communication",
           "mqttlocal": "Use local MQTT",
           "auto_mqtt_user": "Automatically manage MQTT users",
@@ -50,6 +52,7 @@
       "init": {
         "data": {
           "p1meter": "P1 Sensor for smart matching",
+          "price": "Optional: electricity price sensor (ct/kWh)",
           "mqttlog": "Log MQTT communication",
           "auto_mqtt_user": "Automatically manage MQTT users"
         },
@@ -108,6 +111,18 @@
       },
       "soc_set": {
         "name": "Target SoC"
+      },
+      "deadzone": {
+        "name": "P1 Deadzone (±W)"
+      },
+      "p1_target": {
+        "name": "P1 Target Offset (W)"
+      },
+      "cheap_hours_count": {
+        "name": "Cheap hours per day"
+      },
+      "cheap_price_threshold": {
+        "name": "Cheap price threshold (ct/kWh)"
       }
     },
     "sensor": {
@@ -116,6 +131,15 @@
       },
       "available_kwh": {
         "name": "Available Energy"
+      },
+      "current_price": {
+        "name": "Current Electricity Price"
+      },
+      "cheap_hours_active": {
+        "name": "Cheap Hours Active"
+      },
+      "deadzone_skips_total": {
+        "name": "Deadzone Skips Total"
       },
       "total_kwh": {
         "name": "Total Battery Capacity"

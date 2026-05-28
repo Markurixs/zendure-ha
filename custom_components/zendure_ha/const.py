@@ -83,3 +83,12 @@ class SmartMode:
     # Issue #1103: Stale P1 detection. If no P1 update for this many seconds,
     # the manager will force a power=0 update and warn.
     P1_STALE_TIMEOUT = 120
+
+    # Issue #694: Native dynamic-tariff support. Reads a user-provided price
+    # sensor (e.g. Tibber spot price) and exposes "cheap_hours_active" so the
+    # user can build automations that switch the manager to MATCHING_CHARGE
+    # during the cheapest N hours of the day.
+    CHEAP_HOURS_DEFAULT = 4
+    CHEAP_HOURS_MAX = 12
+    CHEAP_PRICE_THRESHOLD_DEFAULT = 15
+    CHEAP_PRICE_THRESHOLD_MAX = 100
